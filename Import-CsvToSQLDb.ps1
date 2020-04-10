@@ -20,7 +20,7 @@ The database where table is located.
 .PARAMETER Table
 The table to where CSV data will be inserted.
 
-.PARAMETER Credential
+.PARAMETER Credentials
 The credentials to use when connecting to the SQL Server database. If not supplied, the script will prompt for credentials. 
 
 .PARAMETER Delimiter
@@ -52,9 +52,6 @@ Param (
     [Parameter(Mandatory=$true)]
     [string] $FilePath,
 
-    [Parameter(Mandatory = $false)]
-    [System.Management.Automation.PSCredential] $Credentials,
-
     [Parameter(Mandatory=$false)]
     [string] $DbServer,
 
@@ -63,6 +60,9 @@ Param (
 
     [Parameter(Mandatory=$false)]
     [string] $Table,
+
+    [Parameter(Mandatory = $false)]
+    [System.Management.Automation.PSCredential] $Credentials,
 
     [Parameter(Mandatory=$false)]
     [string] $Delimiter,

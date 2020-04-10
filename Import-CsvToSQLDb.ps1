@@ -145,6 +145,10 @@ function MappingProcessObject {
 [void][Reflection.Assembly]::LoadWithPartialName("System.Data")
 [void][Reflection.Assembly]::LoadWithPartialName("System.Data.SqlClient")
 
+if (-not $Credentials) {
+    $Credentials = Get-Credential
+}
+
 $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
 
 #REGION load mapping file
@@ -202,7 +206,7 @@ if (-not $BatchSize) {
 }
 #ENDREGION
 
-$connectionString = "Server=$DbServer;Database=$Database;User Id=$UserId;Password=$Password"
+$connectionString = "Server={0};Database={1};User Id={2};Password={3}" -f $DbServer, $Database, $($Credentials.UserName), $($Credentials.GetNetworkCredential().password)
 
 #REGION create column mapping for row data
 # get columns from table

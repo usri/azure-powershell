@@ -60,7 +60,7 @@ CompressFilesToBlob.ps1 -SourceFilePath C:\TEMP\archivefiles -ContainerURI 'http
 
 [CmdletBinding()]
 param (
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory)]
     [string] $SourceFilePath,
     
     [Parameter(ParameterSetName = "StorageAccount", Mandatory = $true)]
@@ -72,44 +72,35 @@ param (
     [Parameter(ParameterSetName = "ContainerURI", Mandatory = $true)]
     [string] $ContainerURI,
 
-    [Parameter(Mandatory = $false)]
     [string] $BlobName,
 
-    [Parameter(Mandatory = $false)]
     [ValidateSet('Date', 'Time')]
     [string] $AppendToBlobName,
 
-    [Parameter(Mandatory = $false)]
     [ValidateSet(0,1,2,3,4,5,6,7,8,9)]
     [int] $CompressionLevel = 5,
 
-    [Parameter(Mandatory = $false)]
     [string] $CompressTempDir = $env:TEMP,
 
-    [Parameter(Mandatory = $false)]
     [switch] $SeparateEachDirectory,
 
-    [Parameter(Mandatory = $false)]
     [ValidateSet('Simple', 'Full', 'None')]
     [string] $IntegrityCheck = "Simple",
 
-    [Parameter(Mandatory = $false)]
     [ValidateSet('Hot', 'Cool', 'Archive')]
     [string] $BlobTier,
 
-    [Parameter(Mandatory = $false)]
+    [Alias("CompletedDir")]
     [string] $CleanUpDir,
 
-    [Parameter(Mandatory = $false)]
     [string] $ZipCommandDir = "",
 
-    [Parameter(Mandatory = $false)]
     [string] $AzCopyCommandDir = "",
 
-    [Parameter(ParameterSetName = "StorageAccount", Mandatory = $false)]
+    [Parameter(ParameterSetName = "StorageAccount")]
     [switch] $UseManagedIdentity,
 
-    [Parameter(ParameterSetName = "StorageAccount", Mandatory = $false)]
+    [Parameter(ParameterSetName = "StorageAccount")]
     [string] $Environment
 
 )
@@ -127,6 +118,8 @@ function IntegrityCheckFull {
         [string] $sourcePath
     )
 
+    Write-Verbose "Performing full integrity check of $filePath against $sourcePath..."
+
     # start a timer
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -135,7 +128,7 @@ function IntegrityCheckFull {
     $zipCRC = @{ }
     Write-Debug "Loading CRC from $filePath..."
     $params = @('l', '-slt', $filePath)
-    & $zipExe $params | ForEach-Object {
+    & $script:zipExe $params | ForEach-Object {
         if ($_.StartsWith('Path')) {
             $currentPath = $_.Substring($_.IndexOf('=') + 2)
         }
@@ -151,7 +144,7 @@ function IntegrityCheckFull {
     $errorCount = 0
     Write-Debug "Checking CRC from $sourcePath..."
     $params = @('h', $sourcePath)
-    & $zipExe $params | Select-Object -Skip 8 | ForEach-Object {
+    & $script:zipExe $params | Select-Object -Skip 8 | ForEach-Object {
         if (-not $endReached) {
             $crc = $_.Substring(0, 8)
             $path = $_.Substring(24)
@@ -184,10 +177,11 @@ function IntegrityCheckFull {
 
     if ($errorCount -gt 0) {
         Write-Warning "$errorCount error(s) detected. $itemsChecked items checked. Please check issues before continuing. ($($stopwatch.Elapsed))"
+        return $false
     }
-    else {
-        Write-Output "$filePath full integrity check completed successfully. $itemsChecked items checked. ($($stopwatch.Elapsed))"
-    }
+
+    Write-Information "$filePath full integrity check completed successfully. $itemsChecked items checked. ($($stopwatch.Elapsed))"
+    return $true
 }
 
 #####################################################################
@@ -195,19 +189,23 @@ function IntegrityCheckSimple {
 
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [string] $filePath
     )
 
+    Write-Verbose "Performing simple integrity check of $filePath..."
+    
     # start a timer
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     $params = @('t', $filePath)
-    & $zipExe $params
+    & $script:zipExe $params
     if (-not $?) {
-        throw "Error testing archive - $filePath" 
+        return $false
     }   
-    Write-Output "$filePath simple integrity check completed successfully. ($($stopwatch.elapsed))"
+
+    Write-Information "$filePath simple integrity check completed successfully. ($($stopwatch.elapsed))"
+    return $true
 }
 
 #####################################################################
@@ -215,10 +213,10 @@ function CompressPathToBlob {
 
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [string] $sourcePath,
 
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [string] $archivePath
     )
 
@@ -249,26 +247,34 @@ function CompressPathToBlob {
     $params += $sourcePath
     
     Write-Verbose "Archiving $sourcePath to $archivePath..."
-    & $zipExe $params
+    & $script:zipExe $params 
     if (-not $?) {
         Write-Error "Error creating archive: $archivePath from: $sourcePath"
         throw
     }
-    Write-Output "$archivePath created. ($($stopwatch.Elapsed))"
+    Write-Information "$archivePath created. ($($stopwatch.Elapsed))"
 
     # check compressed file
+    $result = $true
     if ($script:IntegrityCheck -eq 'None') {
         # skip the integrity check
     }
     elseif ($script:IntegrityCheck -eq 'Simple') {
-        IntegrityCheckSimple -filePath $archivePath
+        $result = IntegrityCheckSimple -filePath $archivePath
     }
     elseif ($script:IntegrityCheck -eq 'Full') {
-        IntegrityCheckFull -filePath $archivePath -sourcePath $sourcePath
+        $result = IntegrityCheckFull -filePath $archivePath -sourcePath $sourcePath
+
     } else {
+        $result = $false
         Write-Error "-IntegrityCheck $IntegrityCheck invaild. No integrity check performed." 
     }
 
+    if (-not $result) {
+        Write-Warning "ERROR -- found when comparing $archivePath to $sourcePath"
+    }
+    
+    $script:fileContinue = $result
 }
 
 #####################################################################
@@ -276,10 +282,10 @@ function CopyFileToContainer {
 
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [string] $filePath,
 
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [string] $containerURI
     )
     
@@ -299,13 +305,17 @@ function CopyFileToContainer {
         $params += ("--block-blob-tier=$script:BlobTier")
     }
 
-    & $azCopyExe $params
+    & $script:azCopyExe $params
     if (-not $?) {
-        Write-Error "Error uploading file: $filePath to $containerURI"
-        throw
+        Write-Error "ERROR Context "ContextName" {
+            It "ItName" {
+                Assertion
+            }
+        } uploading file: $filePath to $containerURI"
+        $script:fileContinue = $false
     }
 
-    Write-Output "$($uri.Host)$($uri.LocalPath)/$($path.Name) copy complete. ($($stopwatch.Elapsed))"
+    Write-Information "$($uri.Host)$($uri.LocalPath)/$($path.Name) copy complete. ($($stopwatch.Elapsed))"
 }
 
 #####################################################################
@@ -350,10 +360,10 @@ Function CleanUpSource {
 
     [cmdletbinding()]
     Param (
-        [Parameter(Mandatory=$True)]
+        [Parameter(Mandatory)]
         [string] $sourcePath,
 
-        [Parameter(Mandatory=$True)]
+        [Parameter(Mandatory)]
         [string] $cleanUpDir
     )
 
@@ -363,11 +373,11 @@ Function CleanUpSource {
     # clean up source files
     if ($CleanUpDir -eq 'Delete') {
         Remove-Item -Path $sourcePath -Recurse -Force
-        Write-Output "$sourcePath deleted ($($stopwatch.Elapsed))"
+        Write-Information "$sourcePath deleted ($($stopwatch.Elapsed))"
 
     } elseif ($CleanUpDir) {
         Move-Item -Path $sourcePath -Destination $CleanUpDir
-        Write-Output "$sourcePath moved to $CleanupDir ($($stopwatch.Elapsed))"
+        Write-Information "$sourcePath moved to $CleanupDir ($($stopwatch.Elapsed))"
     }
 
 }
@@ -375,6 +385,7 @@ Function CleanUpSource {
 # MAIN
 
 # check 7z command path
+Write-Progress -Activity "Checking environment..." -Status "validating 7z"
 if ($ZipCommandDir -and -not $ZipCommandDir.EndsWith('\')) {
     $ZipCommandDir += '\'
 }
@@ -385,6 +396,7 @@ if (-not $?) {
 }
 
 # check azcopy path
+Write-Progress -Activity "Checking environment..." -Status "validating AzCopy"
 if ($AzCopyCommandDir -and -not $AzCopyCommandDir.EndsWith('\')) {
     $AzCopyCommandDir += '\'
 }
@@ -398,6 +410,7 @@ catch {
 }
 
 # login if using managed identities
+Write-Progress -Activity "Checking environment..." -Status "validating Azure identity/environment"
 if ($UseManagedIdentity) {
     try {
         $params = @{ }
@@ -421,17 +434,9 @@ if ($UseManagedIdentity) {
         throw "Please login (Connect-AzAccount) and set the proper subscription context before proceeding."
     }    
     $environment = Get-AzEnvironment -Name $context.Environment
-
-    # login to azcopy
-    # $params = @('login', '--identity', "--aad-endpoint", $environment.ActiveDirectoryAuthority)
-    # & $azcopyExe $params
-    # if (-not $?) {
-    #     throw "Unable to login to azcopy using: $azcopyExe - $($params -join ' ')"
-    # }
 }
 
 if ($PSCmdlet.ParameterSetName -eq 'StorageAccount') { 
-    # login to powershell az commands
     try {
         $result = Get-AzContext -ErrorAction Stop
         if (-not $result.Environment) {
@@ -491,6 +496,7 @@ if ($BlobName -and $SeparateEachDirectory) {
     throw "-BlobName and -SeparateEachDirectory can not be used together."
 }
 
+Write-Progress -Activity "Checking environment..." -Status "reading source directory"
 if ($SeparateEachDirectory) {
     # loop through each directory and upload a separate zip
     $sourcePaths = $(Get-ChildItem $SourceFilePath | Where-Object { $_.PSIsContainer }).FullName
@@ -499,8 +505,13 @@ if ($SeparateEachDirectory) {
     $sourcePaths = $SourceFilePath
 }
 
-$archiveCount = 0
+# remove the progress bar
+Write-Progress  -Activity "Checking environment..." -Completed
+
+$archiveSuccesses = @()
+$archiveFailures = @()
 foreach ($sourcePath in $sourcePaths) {
+    $fileContinue = $true
 
     if ($BlobName) {
         # only one large blob being created
@@ -538,25 +549,19 @@ foreach ($sourcePath in $sourcePaths) {
     Write-Output ''
 
     CompressPathToBlob -SourcePath $sourcePath -archivePath $archivePath
+    if (-not $fileContinue) {
+        $archiveFailures += $sourcePath
+        Write-Warning "ERROR -- $sourcePath failed compression to $archivePath. Please check errors and try again."
+        continue        
+    }
+
     CopyFileToContainer -filePath $archivePath -ContainerURI $ContainerURI
-
-    # if ($PSCmdlet.ParameterSetName -eq 'StorageAccount') { 
-    #     # verify the file & blob size created
-    #     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    #     $archiveFile = Get-ChildItem $archivePath
-    #     $blob = Get-AzStorageBlob -Context $storageAccount.Context -Container $ContainerName -Blob $archiveFile.Name
-    #     if ($archiveFile.Length -ne $blob.Length) {
-    #         Write-Error "$($archiveFile.Name) size ($($archiveFile.Length)) does not match $($blob.Name) Blob size ($($blob.Length))"
-    #         throw
-    #     }
-    #     Write-Output "$($archiveFile.Name) blob copy verified successfully. ($($stopwatch.Elapsed))"
-
-    #     if ($BlobTier) {
-    #         $blob.ICloudBlob.SetStandardBlobTier($BlobTier)
-    #         Write-Output "$containerURI/$($blob.Name) tier set to $BlobTier"
-    #     }
-    # }
- 
+    if (-not $fileContinue) {
+        $archiveFailures += $sourcePath
+        Write-Warning "ERROR -- $archivePath failed copy to $ContainerURI. Please check errors and try again."
+        continue
+    }
+    
     # clean up zip file
     Remove-Item -Path $archivePath -Force
 
@@ -569,8 +574,24 @@ foreach ($sourcePath in $sourcePaths) {
     Write-Output "==================== $(Split-Path $archivePath -Leaf) complete. $(Get-Date) ===================="
     Write-Output ''
     
-    $archiveCount++
+    $archiveSuccesses += $sourcePath
 }
 
-Write-Output "$archiveCount archives copied."
+if ($archiveSuccesses) {
+    Write-Output ''
+    Write-Output '===== SUCCESSFULLY PROCESSED ====='
+    Write-Output $archiveSuccesses
+}
+
+if ($archiveFailures) {
+    Write-Output ""
+    Write-Output "===== FAILED ====="
+    Write-Output $archiveFailures
+}
+
+Write-Output ""
+Write-Output "===== FINAL STATS ====="
+Write-Output "$($archiveSuccesses.Count) succeeded"
+Write-Output "$($achiveFailures.count) failed"
+Write-Output ""
 Write-Output "Script Complete. $(Get-Date)"

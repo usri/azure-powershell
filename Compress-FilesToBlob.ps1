@@ -461,8 +461,6 @@ if ($PSCmdlet.ParameterSetName -eq 'StorageAccount') {
     if (-not $container) {
         throw "Error getting container info for $ContainerName - "
     }
-
-    $ContainerURI = $storageAccount.PrimaryEndpoints.Blob + $ContainerName + $(New-AzStorageAccountSASToken -Context $storageAccount.context -Service Blob -ResourceType Service,Container,Object -Permission racwdlup -ExpiryTime $(Get-Date).AddDays(5))
 }
 
 # check -CleanUpDir parameter
@@ -548,6 +546,9 @@ foreach ($sourcePath in $sourcePaths) {
     Write-Output "==================== $(Split-Path $archivePath -Leaf) started. $(Get-Date) ===================="
     Write-Output ''
 
+    # start a timer
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
     CompressPathToBlob -SourcePath $sourcePath -archivePath $archivePath
     if (-not $fileContinue) {
         $archiveFailures += $sourcePath
@@ -555,6 +556,7 @@ foreach ($sourcePath in $sourcePaths) {
         continue        
     }
 
+    $ContainerURI = $storageAccount.PrimaryEndpoints.Blob + $ContainerName + $(New-AzStorageAccountSASToken -Context $storageAccount.context -Service Blob -ResourceType Service,Container,Object -Permission racwdlup -ExpiryTime $(Get-Date).AddDays(5))
     CopyFileToContainer -filePath $archivePath -ContainerURI $ContainerURI
     if (-not $fileContinue) {
         $archiveFailures += $sourcePath
@@ -571,7 +573,7 @@ foreach ($sourcePath in $sourcePaths) {
     }
 
     Write-Output ''
-    Write-Output "==================== $(Split-Path $archivePath -Leaf) complete. $(Get-Date) ===================="
+    Write-Output "==================== $(Split-Path $archivePath -Leaf) complete. $(Get-Date) ($($stopwatch.Elapsed) elapsed) ===================="
     Write-Output ''
     
     $archiveSuccesses += $sourcePath
@@ -592,6 +594,6 @@ if ($archiveFailures) {
 Write-Output ""
 Write-Output "===== FINAL STATS ====="
 Write-Output "$($archiveSuccesses.Count) succeeded"
-Write-Output "$($achiveFailures.count) failed"
+Write-Output "$($achiveFailures.Count) failed"
 Write-Output ""
 Write-Output "Script Complete. $(Get-Date)"

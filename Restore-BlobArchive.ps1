@@ -230,7 +230,12 @@ if ($DestinationPath -and -not $DestinationPath.EndsWith('\')) {
     $DestinationPath += '\'
 }
 if (-not $(Test-Path -Path $DestinationPath)) {
-    throw "Unable to find $DestinationPath. Please check the -DestinationPath and try again."
+    try {
+        New-Item $DestinationPath -ItemType Directory
+    } catch {
+        Write-Error "Unable to create directory $DestinationPath - check -DestinationPath and try again."
+        throw
+    }
 }
 
 # login if using managed identities
@@ -296,30 +301,51 @@ if (-not $container) {
 
 $scriptPath = $MyInvocation.InvocationName
 
-# restore a single archive file
+# restore a blobs by name
 if ($BlobName) {
-    $blob = Get-AzStorageBlob -Context $storageAccount.Context -Container $ContainerName -Blob $BlobName
-    RestoreBlob -blob $blob
-    return
-}
+    $blobs = Get-AzStorageBlob -Context $storageAccount.Context -Container $ContainerName | Where-Object {$_.Name -like $BlobName}
+    if (-not $blobs) {
+        Write-Output "No blobs '$BlobName' found in $StorageAccountName/$ContainerName"
+        return
 
-if (-not $RestoreEmptyDirectories) {
-    return
-}
+    } elseif ($blobs.Count -eq 1) {
+        RestoreBlob -Blob $blobs[0]
+        return
 
-# restore any empty directories
-$archiveBlobNames = @()
-$dirs = Get-ChildItem $DestinationPath | Where-Object { $_.PSIsContainer }
-foreach ($dir in $dirs) {
-    if ($(Get-ChildItem $dir).Count -eq 0) {
-        $archiveBlobNames += $dir.Name + '.7z'
+    } elseif ($blobs.Count -gt 1) {
+        $blobs = $blobs | Select-Object -Property Name, Length, AccessTier | Out-Gridview -Title "Select archive to restore" -PassThru
+        if (-not $blobs) {
+            Write-Output "No blobs selected."
+            return
+        }
     }
+
+    $archiveBlobNames = $blobs.Name
+
+} elseif ($RestoreEmptyDirectories) {
+
+    # restore blobs from empty directories
+    $archiveBlobNames = @()
+    $dirs = Get-ChildItem $DestinationPath | Where-Object { $_.PSIsContainer }
+    foreach ($dir in $dirs) {
+        if ($(Get-ChildItem $dir).Count -eq 0) {
+            $archiveBlobNames += $dir.Name + '.7z'
+        }
+    }
+
+    if (-not $archiveBlobNames) {
+        Write-Output "No empty directories found. Nothing to do."
+        return
+    }
+
+} else {
+    Write-Output "-BlobName or -RestoreEmptyDirectories must be provided"
+
 }
 
-if (-not $archiveBlobNames) {
-    Write-Output "No empty directories found. Nothing to do."
-    return
-}
+Write-Output "Blobs to restore:"
+$archiveBlobNames
+
 
 $jobs = @()
 foreach ($archiveBlobName in $archiveBlobNames) {
@@ -361,12 +387,14 @@ foreach ($archiveBlobName in $archiveBlobNames) {
 }
 
 $sleepInterval = 5
+$jobNames = @()
 $jobIds = [System.Collections.ArrayList] @($jobs.Id)
+Write-Progress -Activity 'Restoring blob archives' -Status ' '
 do {
-    Write-Output "$(Get-Date) Waiting for jobs $($jobIds -join ', ')..."
     Start-Sleep -Seconds $sleepInterval
 
     $CompleteJobIds = @()
+    $jobNames = @()
     foreach ($jobId in $jobIds) {
         $job = Get-Job -Id $jobId
         if ($job.State -eq 'Running') {
@@ -375,6 +403,7 @@ do {
                 $job | Receive-Job | ForEach-Object {
                     LogOutput -BlobName $job.name -Message "$_"
                 }
+                Write-Progress -Id $jobId -Activity $($job.name + '...updated ' + (Get-Date)) -Status ' '
             } else {
                 if ($sleepInterval -gt 60) {
                     $sleepInterval = 60

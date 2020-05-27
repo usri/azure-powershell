@@ -392,14 +392,12 @@ foreach ($archiveBlobName in $archiveBlobNames) {
 }
 
 $sleepInterval = 5
-$jobNames = @()
 $jobIds = [System.Collections.ArrayList] @($jobs.Id)
 Write-Progress -Activity 'Restoring blob archives' -Status ' '
 do {
     Start-Sleep -Seconds $sleepInterval
 
     $CompleteJobIds = @()
-    $jobNames = @()
     foreach ($jobId in $jobIds) {
         $job = Get-Job -Id $jobId
         if ($job.State -eq 'Running') {

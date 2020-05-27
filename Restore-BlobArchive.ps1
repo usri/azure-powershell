@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Restore an archive from blob. 
+Restore an archive from blob.
 
 .DESCRIPTION
 This script will restore a compressed zip file from blob to a VM file system. If the blob is in the archive tier, it will rehydrate it first, before copying and restoring it.
@@ -30,13 +30,13 @@ Keeps the archive zip file in the -ArchiveTempDir location after restoring the f
 Directory to use for the .7z archive compression to reside. If no directory is specific, the archive will be placed in the TEMP directory specified by the current environment variable.
 
 .PARAMETER ZipCommandDir
-Specifies the directory where the 7z.exe command can be found. If not specified, it will look in the current PATH 
+Specifies the directory where the 7z.exe command can be found. If not specified, it will look in the current PATH
 
 .PARAMETER AzCopyCommandDir
-Specifies the directory where the azcpoy.exe command can be found. If not specified, it will look in the current PATH 
+Specifies the directory where the azcpoy.exe command can be found. If not specified, it will look in the current PATH
 
 .PARAMETER UseManagedIdentity
-Specifies the use of Managed Identity to authenticate into Azure Powershell APIs and azcopy.exe. If not specified, the AzureCloud is use by default. Cannot be used with 
+Specifies the use of Managed Identity to authenticate into Azure Powershell APIs and azcopy.exe. If not specified, the AzureCloud is use by default. Cannot be used with
 
 .PARAMETER Environment
 Specifies the Azure cloud environment to use for authentication. If not specified the AzureCloud is used by default
@@ -106,7 +106,7 @@ function LogOutput
     $logFile = $blobName + '.log'
 
     if ($script:LogOutputDir) {
-        "$(Get-Date) $message" | Out-File -Path "$($script:LogOutputDir)$($logFile)" -Append        
+        "$(Get-Date) $message" | Out-File -Path "$($script:LogOutputDir)$($logFile)" -Append
     }
     Write-Output "$(Get-Date) $($blobName): $message"
 }
@@ -124,12 +124,12 @@ function RestoreBlobFromURI {
     LogOutput -BlobName $fileName -Message "----- Restore of $filename to $script:DestinationPath started -----"
 
     $params = @('copy', $BlobUri, $script:ArchiveTempDir)
-    LogOutput -BlobName $fileName -Message "$script:azcopyExe $($params -join ' ') started." 
+    LogOutput -BlobName $fileName -Message "$script:azcopyExe $($params -join ' ') started."
     & $script:azcopyExe $params
     if (-not $?) {
         LogOutput -BlobName $fileName -Message "ERROR - error occurred while downloading $BlobUri"
         Write-Error "ERROR: erorr occurred while downloading blob"
-        throw 
+        throw
     }
 
     $params = @('x', $($script:ArchiveTempDir + $fileName), "-o$script:DestinationPath", '-aoa')
@@ -179,6 +179,7 @@ function RestoreBlob {
 # MAIN
 
 # check 7z command path
+Write-Progress -Activity "Checking environment..." -Status "validating 7zip"
 if ($ZipCommandDir -and -not $ZipCommandDir.EndsWith('\')) {
     $ZipCommandDir += '\'
 }
@@ -189,6 +190,7 @@ if (-not $?) {
 }
 
 # check azcopy path
+Write-Progress -Activity "Checking environment..." -Status "validating AzCopy"
 if ($AzCopyCommandDir -and -not $AzCopyCommandDir.EndsWith('\')) {
     $AzCopyCommandDir += '\'
 }
@@ -201,8 +203,6 @@ if ($LogOutputDir -and -not $AzCopyCommandDir.EndsWith('\')) {
         throw "Unable to find -LogOutputDir $LogOutputDir for writing logs"
     }
 }
-
-
 try {
     $null = Invoke-Expression -Command $azcopyExe -ErrorAction SilentlyContinue
 }
@@ -210,6 +210,7 @@ catch {
     throw "Unable to find azcopy.exe command. Please make sure azcopy.exe is in your PATH or use -AzCopyCommandDir to specify azcopy.exe path"
 }
 
+# check from directories or individual blob
 if ($RestoreEmptyDirectories -and $BlobName) {
     throw  "Incompatible parameters -RestoreEmptyDirectories can not be used with -BlobName"
 }
@@ -223,7 +224,7 @@ if ($ArchiveTempDir -and -not $ArchiveTempDir.EndsWith('\')) {
 }
 if (-not $(Test-Path -Path $ArchiveTempDir)) {
     throw "Unable to find $ArchiveTempDir. Please check the -ArchiveTempDir and try again."
-} 
+}
 
 # check destination filepath
 if ($DestinationPath -and -not $DestinationPath.EndsWith('\')) {
@@ -240,6 +241,7 @@ if (-not $(Test-Path -Path $DestinationPath)) {
 
 # login if using managed identities
 if ($UseManagedIdentity) {
+    Write-Progress -Activity "Checking environment..." -Status "validating Azure environment"
     try {
         $params = @{ }
         if ($Environment) {
@@ -260,7 +262,7 @@ if ($UseManagedIdentity) {
     }
     catch {
         throw "Please login (Connect-AzAccount) and set the proper subscription context before proceeding."
-    }    
+    }
     $environment = Get-AzEnvironment -Name $context.Environment
 }
 
@@ -271,6 +273,8 @@ if ($BlobUri) {
 
 # remain code relates to $PSCmdlet.ParameterSetName of 'StorageAccount')
 # login to powershell az sdk
+Write-Progress -Activity "Checking environment..." -Status "checking storage container"
+
 try {
     $result = Get-AzContext -ErrorAction Stop
     if (-not $result.Environment) {
@@ -296,6 +300,7 @@ if (-not $container) {
     throw "Error getting container info for $ContainerName - "
 }
 
+Write-Progress -Activity "Checking environment..." -Completed
 
 ##### START PROCESSING #####
 
@@ -357,7 +362,7 @@ foreach ($archiveBlobName in $archiveBlobNames) {
     # rehydrate blob if necessary
     if ($blob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive') {
         if (-not $blob.ICloudBlob.Properties.RehydrationStatus) {
-            $blob.ICloudBlob.SetStandardBlobTier("Hot", “Standard”)
+            $blob.ICloudBlob.SetStandardBlobTier('Hot', 'Standard')
             LogOutput -BlobName $archiveBlobName -Message "Rehydrate requested for: $($blob.Name)"
         }
 
@@ -371,7 +376,7 @@ foreach ($archiveBlobName in $archiveBlobNames) {
     if ($job -and $job.State -eq 'Running') {
         LogOutput -BlobName $archiveBlobName "$archiveBlobName (Job:$($job.Id)) already running, staus will be displayed"
         $jobs += $job
-        continue 
+        continue
     }
 
     # create new job
@@ -421,13 +426,13 @@ do {
             LogOutput -BlobName $job.name "==================== $($job.Name) $($job.State) $($job.StatusMessage) ===================="
             Remove-Job $job
             $CompleteJobIds += $jobId
-        }    
+        }
     }
 
     # remove any completed job from array
     foreach ($jobId in $CompleteJobIds) {
         $jobIds.Remove($jobId)
-    } 
+    }
 } until (-not $jobIds)
 
 Write-Output "Script complete."

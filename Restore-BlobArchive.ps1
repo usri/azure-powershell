@@ -171,7 +171,7 @@ function RestoreBlob {
         }
     }
 
-    $sasToken = New-AzStorageBlobSASToken -CloudBlob $blob.ICloudBlob -Context $blob.Context -Permission r
+    $sasToken = New-AzStorageBlobSASToken -CloudBlob $blob.ICloudBlob -Context $blob.Context -Permission r -ExpiryTime $((Get-Date).AddDays(7))
     RestoreBlobFromURI -BlobUri $($blob.ICloudBlob.Uri.Absoluteuri + $sasToken)
 }
 

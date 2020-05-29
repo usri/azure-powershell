@@ -47,46 +47,40 @@ RestoreArchive.ps1 -StorageAccountName 'myStorageAccount' -ContainerName 'archiv
 
 [CmdletBinding()]
 param (
-    [Parameter(ParameterSetName = "StorageAccount", Mandatory = $true)]
+    [Parameter(ParameterSetName = "StorageAccount", Mandatory)]
     [string] $StorageAccountName,
 
-    [Parameter(ParameterSetName = "StorageAccount", Mandatory = $true)]
+    [Parameter(ParameterSetName = "StorageAccount", Mandatory)]
     [string] $ContainerName,
 
-    [Parameter(ParameterSetName = "StorageAccount", Mandatory = $false)]
+    [Parameter(ParameterSetName = "StorageAccount")]
     [string] $BlobName,
 
-    [Parameter(ParameterSetName = "BlobUri", Mandatory = $true)]
+    [Parameter(ParameterSetName = "BlobUri", Mandatory)]
     [string] $BlobUri,
 
-    [Parameter(Mandatory = $false)]
     [string] $DestinationPath = '.\',
 
-    [Parameter(Mandatory = $false)]
-    [switch] $WaitForRehydration,
+    [Parameter(ParameterSetName = "StorageAccount")]
+    [ValidateSet('Standard','High')]
+    [string] $RehydratePriority = 'Standard',
 
-    [Parameter(Mandatory = $false)]
     [switch] $KeepArchiveFile,
 
-    [Parameter(Mandatory = $false)]
     [switch] $RestoreEmptyDirectories,
 
-    [Parameter(Mandatory = $false)]
     [string] $LogOutputDir,
 
-    [Parameter(Mandatory = $false)]
     [string] $ArchiveTempDir = $env:TEMP,
 
-    [Parameter(Mandatory = $false)]
     [string] $ZipCommandDir = "",
 
-    [Parameter(Mandatory = $false)]
     [string] $AzCopyCommandDir = "",
 
-    [Parameter(ParameterSetName = "StorageAccount", Mandatory = $false)]
+    [Parameter(ParameterSetName = "StorageAccount")]
     [switch] $UseManagedIdentity,
 
-    [Parameter(ParameterSetName = "StorageAccount", Mandatory = $false)]
+    [Parameter(ParameterSetName = "StorageAccount")]
     [string] $Environment
 
 )
@@ -114,7 +108,7 @@ function LogOutput
 #####################################################################
 function RestoreBlobFromURI {
     param (
-        [parameter(Mandatory = $true)]
+        [parameter(Mandatory)]
         [string] $BlobUri
     )
 
@@ -154,17 +148,30 @@ function RestoreBlob {
 
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
-        $blob
+        [Parameter(Mandatory)]
+        $blob,
+
+        [Parameter(Mandatory)]
+        [string] $RehydratePriority
     )
 
-    while ($blob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive' -or $blob.ICloudBlob.Properties.RehydrationStatus -eq 'PendingToHot') {
-        $blobName = $blob.Name
-        $containerName = $blob.ICloudBlob.container.Name
+    LogOutput -BlobName $archiveBlobName -Message "Restoring started: $($blob.Name)"
 
-        LogOutput -Blobname $blobName -Message "current tier:$($blob.ICloudBlob.Properties.StandardBlobTier)...rehydration status:$($blob.ICloudBlob.Properties.RehydrationStatus) (next update in 10 mins)... "
+    $blobName = $blob.Name
+    $containerName = $blob.ICloudBlob.container.Name
+
+    # rehydrate blob if necessary
+    while ($blob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive') {
+
+        if (-not $blob.ICloudBlob.Properties.RehydrationStatus) {
+            $blob.ICloudBlob.SetStandardBlobTier('Hot', $RehydratePriority)
+            LogOutput -BlobName $archiveBlobName -Message "Rehydrate requested for: $($blob.Name)"
+        }
+
         Start-Sleep 600 # 10 mins
+
         $blob = Get-AzStorageBlob -Context $blob.Context -Container $containerName -Blob $blobName
+        LogOutput -Blobname $blobName -Message "tier:$($blob.ICloudBlob.Properties.StandardBlobTier)...rehydration:$($blob.ICloudBlob.Properties.RehydrationStatus) (next update in 10 mins)... "
         if (-not $blob) {
             LogOutput -BlobName $blobName -Message "Unable to find $blobName in $containerName"
             throw "Unable to find $blobName in $containerName"
@@ -177,6 +184,8 @@ function RestoreBlob {
 
 #####################################################################
 # MAIN
+
+Set-StrictMode -Version 3
 
 # check 7z command path
 Write-Progress -Activity "Checking environment..." -Status "validating 7zip"
@@ -313,16 +322,15 @@ if ($BlobName) {
         Write-Output "No blobs '$BlobName' found in $StorageAccountName/$ContainerName"
         return
 
-    } elseif ($blobs.Count -eq 1) {
-        RestoreBlob -Blob $blobs[0]
-        return
-
-    } elseif ($blobs.Count -gt 1) {
+    } elseif ($blobs.GetType().IsArray) {
         $blobs = $blobs | Select-Object -Property Name, Length, AccessTier | Out-Gridview -Title "Select archive to restore" -PassThru
         if (-not $blobs) {
             Write-Output "No blobs selected."
             return
         }
+    } else {
+        RestoreBlob -Blob $blobs -RehydratePriority $RehydratePriority
+        return
     }
 
     $archiveBlobNames = $blobs.Name
@@ -359,18 +367,6 @@ foreach ($archiveBlobName in $archiveBlobNames) {
         throw "Unable to find $archiveBlobName in $ContainerName"
     }
 
-    # rehydrate blob if necessary
-    if ($blob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive') {
-        if (-not $blob.ICloudBlob.Properties.RehydrationStatus) {
-            $blob.ICloudBlob.SetStandardBlobTier('Hot', 'Standard')
-            LogOutput -BlobName $archiveBlobName -Message "Rehydrate requested for: $($blob.Name)"
-        }
-
-        if (-not $WaitForRehydration) {
-            LogOutput -BlobName $archiveBlobName -Message "File is rehydrating - current status: $($blob.ICloudBlob.Properties.RehydrationStatus)"
-        }
-    }
-
     # skip existing jobs
     $job = Get-Job -Name $archiveBlobName -ErrorAction SilentlyContinue
     if ($job -and $job.State -eq 'Running') {
@@ -380,11 +376,11 @@ foreach ($archiveBlobName in $archiveBlobNames) {
     }
 
     # create new job
-    $scriptBlock = [ScriptBlock]::Create('Param ($p1, $p2, $p3, $p4, $p5, $p6, $p7) ' + $scriptPath + ' -StorageAccountName $p1 -ContainerName $p2 -BlobName $p3 -DestinationPath $p4 -AzCopyCommandDir $p5 -ZipCommandDir $p6 -ArchiveTempDir $p7')
+    $scriptBlock = [ScriptBlock]::Create('Param ($p1, $p2, $p3, $p4, $p5, $p6, $p7, $p8) ' + $scriptPath + ' -StorageAccountName $p1 -ContainerName $p2 -BlobName $p3 -DestinationPath $p4 -AzCopyCommandDir $p5 -ZipCommandDir $p6 -ArchiveTempDir $p7 -RehydratePriority $p8')
     $params = @{
         Name         = $archiveBlobName
         ScriptBlock  = $scriptBlock
-        ArgumentList = $StorageAccountName, $ContainerName, $archiveBlobName, $($DestinationPath + $(Split-Path $archiveBlobName -LeafBase) + '\'), $AzCopyCommandDir, $ZipCommandDir, $ArchiveTempDir
+        ArgumentList = $StorageAccountName, $ContainerName, $archiveBlobName, $($DestinationPath + $(Split-Path $archiveBlobName -LeafBase) + '\'), $AzCopyCommandDir, $ZipCommandDir, $ArchiveTempDir, $RehydratePriority
     }
     # ScriptBlock  = { Param ($p1, $p2, $p3, $p4, $p5, $p6, $p7) .\Restore-BlobArchive.ps1 -StorageAccountName $p1 -ContainerName $p2 -BlobName $p3 -DestinationPath $p4 -AzCopyCommandDir $p5 -ZipCommandDir $p6 -ArchiveTempDir $p7 }
     $jobs += Start-Job @params

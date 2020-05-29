@@ -114,6 +114,7 @@ function RestoreBlobFromURI {
 
     $uri = [uri] $BlobUri
     $fileName = $uri.Segments[$uri.Segments.Count - 1]
+    $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
 
     LogOutput -BlobName $fileName -Message "----- Restore of $filename to $script:DestinationPath started -----"
 
@@ -139,7 +140,7 @@ function RestoreBlobFromURI {
         Remove-Item "$($script:ArchiveTempDir + $fileName)" -Force
     }
 
-    LogOutput -BlobName $fileName -Message "----- Restore of $filename to $script:DestinationPath complete -----"
+    LogOutput -BlobName $fileName -Message "----- Restore of $filename to $script:DestinationPath complete. ($($elapsed.Elapsed.ToString())) -----"
 }
 
 #####################################################################
@@ -155,10 +156,11 @@ function RestoreBlob {
         [string] $RehydratePriority
     )
 
-    LogOutput -BlobName $archiveBlobName -Message "Restoring started: $($blob.Name)"
-
+    $elapsed = $null
     $blobName = $blob.Name
     $containerName = $blob.ICloudBlob.container.Name
+
+    LogOutput -BlobName $blobName -Message "Restoring started: $($blobName)"
 
     # rehydrate blob if necessary
     while ($blob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive') {
@@ -166,6 +168,7 @@ function RestoreBlob {
         if (-not $blob.ICloudBlob.Properties.RehydrationStatus) {
             $blob.ICloudBlob.SetStandardBlobTier('Hot', $RehydratePriority)
             LogOutput -BlobName $archiveBlobName -Message "Rehydrate requested for: $($blob.Name)"
+            $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
         }
 
         Start-Sleep 600 # 10 mins
@@ -178,6 +181,10 @@ function RestoreBlob {
         }
     }
 
+    if ($elapsed) {
+        LogOutput -BlobName $blobName -Message "Rehydration complete. ($($elapsed.Elapsed.ToString()))"
+    }
+
     $sasToken = New-AzStorageBlobSASToken -CloudBlob $blob.ICloudBlob -Context $blob.Context -Permission r -ExpiryTime $((Get-Date).AddDays(7))
     RestoreBlobFromURI -BlobUri $($blob.ICloudBlob.Uri.Absoluteuri + $sasToken)
 }
@@ -187,6 +194,7 @@ function RestoreBlob {
 
 Set-StrictMode -Version 3
 
+#region - validate parameters
 # check 7z command path
 Write-Progress -Activity "Checking environment..." -Status "validating 7zip"
 if ($ZipCommandDir -and -not $ZipCommandDir.EndsWith('\')) {
@@ -274,14 +282,16 @@ if ($UseManagedIdentity) {
     }
     $environment = Get-AzEnvironment -Name $context.Environment
 }
+#endregion
 
+#region - Handle restoring by URL
 if ($BlobUri) {
     RestoreBlobFromURI -BlobUri $BlobUri
     return
 }
+#endregion
 
-# remain code relates to $PSCmdlet.ParameterSetName of 'StorageAccount')
-# login to powershell az sdk
+#region - verify parameters for $PSCmdlet.ParameterSetName='StorageAccount'
 Write-Progress -Activity "Checking environment..." -Status "checking storage container"
 
 try {
@@ -310,8 +320,10 @@ if (-not $container) {
 }
 
 Write-Progress -Activity "Checking environment..." -Completed
+#endregion
 
-##### START PROCESSING #####
+
+########## START PROCESSING ##########
 
 $scriptPath = $MyInvocation.InvocationName
 
@@ -356,9 +368,9 @@ if ($BlobName) {
 
 }
 
+#region - create jobs for each restore
 Write-Output "Blobs to restore:"
 $archiveBlobNames
-
 
 $jobs = @()
 foreach ($archiveBlobName in $archiveBlobNames) {
@@ -386,7 +398,9 @@ foreach ($archiveBlobName in $archiveBlobNames) {
     $jobs += Start-Job @params
     LogOutput -BlobName $archiveBlobName -Message "==================== $archiveBlobName job started ===================="
 }
+#endregion
 
+#region - display output for all jobs
 $sleepInterval = 5
 $jobIds = [System.Collections.ArrayList] @($jobs.Id)
 Write-Progress -Activity 'Restoring blob archives' -Status ' '
@@ -428,5 +442,6 @@ do {
         $jobIds.Remove($jobId)
     }
 } until (-not $jobIds)
+#endregion
 
 Write-Output "Script complete."

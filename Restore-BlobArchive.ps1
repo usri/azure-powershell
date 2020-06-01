@@ -17,11 +17,14 @@ Name of the container to upload the archive file to. Cannot be used with BlobUri
 .PARAMETER BlobUri
 URI of the compressed archive file. Using this parameter assumes that you can only access this file via SAS token. When using BlobUri, the file will NOT be rehydrated. For files in an achive tier, the storage account naming convention will need to be used. Cannot be used with -StorageAccountName, -ContainerName, -ManagedIdentity, or -Environment
 
+.PARAMETER RehydrationPriority
+Priority level for rehydration of any blob in Archive tier
+
+.PARAMETER RehydrationToContainer
+Container with in the Storage Account to copy the Archive blob to. This will create a copy of the blob contents without moving the original from Archive.
+
 .PARAMETER DestinationPath
 Path where the archive should be expanded into. This script will create a folder underneath the -DestinationPath, but it will NOT create it. This directory must exists before the script will start.
-
-.PARAMETER WaitForRehydration
-Sleep and wait for the rehydration from archive tier to complete then restore the files. If this is not specified, the rehydration will be requested then the script will exit.
 
 .PARAMETER KeepArchiveFile
 Keeps the archive zip file in the -ArchiveTempDir location after restoring the files. If not specified the zip file will be deleted from the local machine once expanding has completed successfully.
@@ -65,6 +68,9 @@ param (
     [ValidateSet('Standard','High')]
     [string] $RehydratePriority = 'Standard',
 
+    [Parameter(ParameterSetName = "StorageAccount")]
+    [string] $RehydrateToContainer,
+
     [switch] $KeepArchiveFile,
 
     [switch] $RestoreEmptyDirectories,
@@ -102,79 +108,40 @@ function LogOutput
     if ($script:LogOutputDir) {
         "$(Get-Date) $message" | Out-File -Path "$($script:LogOutputDir)$($logFile)" -Append
     }
-    Write-Output "$(Get-Date) $($blobName): $message"
+    Write-Host "$(Get-Date) $($blobName): $message"
 }
 
 #####################################################################
-function RestoreBlobFromURI {
-    param (
-        [parameter(Mandatory)]
-        [string] $BlobUri
-    )
-
-    $uri = [uri] $BlobUri
-    $fileName = $uri.Segments[$uri.Segments.Count - 1]
-    $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
-
-    LogOutput -BlobName $fileName -Message "----- Restore of $filename to $script:DestinationPath started -----"
-
-    $params = @('copy', $BlobUri, $script:ArchiveTempDir)
-    LogOutput -BlobName $fileName -Message "$script:azcopyExe $($params -join ' ') started."
-    & $script:azcopyExe $params
-    if (-not $?) {
-        LogOutput -BlobName $fileName -Message "ERROR - error occurred while downloading $BlobUri"
-        Write-Error "ERROR: erorr occurred while downloading blob"
-        throw
-    }
-
-    $params = @('x', $($script:ArchiveTempDir + $fileName), "-o$script:DestinationPath", '-aoa')
-    LogOutput -BlobName $fileName -Message "$script:zipExe $($params -join ' ') started. "
-    & $script:zipExe $params
-    if (-not $?) {
-        LogOutput -BlobName $fileName -Message "ERROR: unable to uncompress $($params[1])"
-        Write-Error "ERROR: unable to uncompress file"
-        throw
-    }
-
-    if (-not $KeepArchiveFile) {
-        Remove-Item "$($script:ArchiveTempDir + $fileName)" -Force
-    }
-
-    LogOutput -BlobName $fileName -Message "----- Restore of $filename to $script:DestinationPath complete. ($($elapsed.Elapsed.ToString())) -----"
-}
-
-#####################################################################
-
-function RestoreBlob {
+function RehydrateBlob {
 
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
-        $blob,
+        $Blob,
 
         [Parameter(Mandatory)]
         [string] $RehydratePriority
     )
 
     $elapsed = $null
-    $blobName = $blob.Name
-    $containerName = $blob.ICloudBlob.container.Name
 
-    LogOutput -BlobName $blobName -Message "Restoring started: $($blobName)"
+    $blobName = $Blob.Name
+    $containerName = $Blob.ICloudBlob.container.Name
+
+    if (-not $Blob.ICloudBlob.Properties.RehydrationStatus) {
+        $Blob.ICloudBlob.SetStandardBlobTier('Hot', $RehydratePriority)
+        LogOutput -BlobName $Blob -Message "Rehydrate requested"
+        $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
+    } else {
+        LogOutput -BlobName $Blob -Message "Rehydrate already under way"
+    }
 
     # rehydrate blob if necessary
-    while ($blob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive') {
-
-        if (-not $blob.ICloudBlob.Properties.RehydrationStatus) {
-            $blob.ICloudBlob.SetStandardBlobTier('Hot', $RehydratePriority)
-            LogOutput -BlobName $archiveBlobName -Message "Rehydrate requested for: $($blob.Name)"
-            $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
-        }
-
+    while ($Blob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive') {
+        LogOutput -Blobname $blobName -Message "tier:$($Blob.ICloudBlob.Properties.StandardBlobTier)...rehydration:$($Blob.ICloudBlob.Properties.RehydrationStatus) (next update in 10 mins)... "
         Start-Sleep 600 # 10 mins
 
-        $blob = Get-AzStorageBlob -Context $blob.Context -Container $containerName -Blob $blobName
-        LogOutput -Blobname $blobName -Message "tier:$($blob.ICloudBlob.Properties.StandardBlobTier)...rehydration:$($blob.ICloudBlob.Properties.RehydrationStatus) (next update in 10 mins)... "
+        $blob = Get-AzStorageBlob -Context $Blob.Context -Container $containerName -Blob $blobName
         if (-not $blob) {
             LogOutput -BlobName $blobName -Message "Unable to find $blobName in $containerName"
             throw "Unable to find $blobName in $containerName"
@@ -185,8 +152,158 @@ function RestoreBlob {
         LogOutput -BlobName $blobName -Message "Rehydration complete. ($($elapsed.Elapsed.ToString()))"
     }
 
-    $sasToken = New-AzStorageBlobSASToken -CloudBlob $blob.ICloudBlob -Context $blob.Context -Permission r -ExpiryTime $((Get-Date).AddDays(7))
-    RestoreBlobFromURI -BlobUri $($blob.ICloudBlob.Uri.Absoluteuri + $sasToken)
+    return $blob
+}
+
+#####################################################################
+function RehydrateBlobCopy {
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        $Blob,
+
+        [Parameter(Mandatory)]
+        [string] $RehydratePriority,
+
+        [Parameter()]
+        [string] $RehydrateToContainer
+
+    )
+
+    $elapsed = $null
+
+    #region - check to see if a copy exists
+    $destBlob = Get-AzStorageBlob -Context $Blob.Context -Container $RehydrateToContainer -Blob $Blob.Name -ErrorAction SilentlyContinue
+    if (-not $destBlob) {
+        try {
+            $destBlob = Start-AzStorageBlobCopy `
+                -SrcContainer $Blob.ICloudBlob.Container.Name `
+                -SrcBlob $Blob.Name `
+                -DestContainer $RehydrateToContainer `
+                -DestBlob $Blob.Name `
+                -StandardBlobTier 'Hot' `
+                -RehydratePriority $RehydratePriority `
+                -Context $Blob.Context
+            if (-not $destBlob) {
+                Write-Error "Failed trying to request rehydrate copy for: $($Blob.Name)"
+                return $null
+            }
+
+            LogOutput -BlobName $Blob.Name -Message "Rehydrate Copy requested"
+            $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
+
+        } catch {
+            throw $_
+            return $null
+        }
+    } else {
+        LogOutput -BlobName $Blob.Name -Message "Rehydrate Copy already under way"
+    }
+    #endregion
+
+    while ($destBlob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive') {
+        LogOutput -Blobname $destBlob.Name -Message "tier:$($destBlob.ICloudBlob.Properties.StandardBlobTier)...rehydration:$($destBlob.ICloudBlob.Properties.RehydrationStatus) (next update in 10 mins)... "
+        Start-Sleep 600 # 10 mins
+
+        $destBlob = Get-AzStorageBlob -Context $Blob.Context -Container $RehydrateToContainer -Blob $Blob.Name
+        if (-not $destBlob) {
+            LogOutput -BlobName $Blob.Name -Message "Unable to find $($Blob.Name) in $RehydrateToContainer"
+            throw "Unable to find $($Blob.Name) in $RehydrateToContainer"
+        }
+    }
+
+    if ($elapsed) {
+        LogOutput -BlobName $destBlob.Name -Message "Rehydration complete. ($($elapsed.Elapsed.ToString()))"
+    }
+    return $destBlob
+}
+
+
+#####################################################################
+function RestoreBlobFromURI {
+    param (
+        [parameter(Mandatory)]
+        [string] $BlobUri
+    )
+
+    $uri = [uri] $BlobUri
+    $fileName = $uri.Segments[$uri.Segments.Count - 1]
+
+    #region - download blob
+    $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
+    LogOutput -BlobName $fileName -Message "----- download of $filename to $script:DestinationPath started -----"
+
+    $params = @('copy', $BlobUri, $script:ArchiveTempDir)
+    LogOutput -BlobName $fileName -Message "$script:azcopyExe $($params -join ' ') started."
+    & $script:azcopyExe $params
+    if (-not $?) {
+        LogOutput -BlobName $fileName -Message "ERROR - error occurred while downloading $BlobUri"
+        Write-Error "ERROR: erorr occurred while downloading blob"
+        throw
+    }
+    LogOutput -BlobName $fileName -Message "----- download of $filename to $script:DestinationPath complete. ($($elapsed.Elapsed.ToString())) -----"
+    #endregion
+
+    #region - unzip blob
+    $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
+    LogOutput -BlobName $fileName -Message "----- unzip of $filename to $script:DestinationPath started -----"
+
+    $params = @('x', $($script:ArchiveTempDir + $fileName), "-o$script:DestinationPath", '-aoa')
+    LogOutput -BlobName $fileName -Message "$script:zipExe $($params -join ' ') started. "
+    & $script:zipExe $params
+    if (-not $?) {
+        LogOutput -BlobName $fileName -Message "ERROR: unable to uncompress $($params[1])"
+        Write-Error "ERROR: unable to uncompress file"
+        throw
+    }
+    LogOutput -BlobName $fileName -Message "----- unzip of $filename to $script:DestinationPath complete. ($($elapsed.Elapsed.ToString()))  -----"
+    #endregion
+
+    if (-not $KeepArchiveFile) {
+        Remove-Item "$($script:ArchiveTempDir + $fileName)" -Force
+    }
+}
+
+#####################################################################
+
+function RestoreBlob {
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        $Blob,
+
+        [Parameter(Mandatory)]
+        [string] $RehydratePriority,
+
+        [Parameter()]
+        [string] $RehydrateToContainer
+
+    )
+
+    $blobName = $Blob.Name
+
+    $elapsed = [System.Diagnostics.Stopwatch]::StartNew()
+    LogOutput -BlobName $blobName -Message "===== Restore started ====="
+
+    if ($Blob.ICloudBlob.Properties.StandardBlobTier -eq 'Archive') {
+        if ($RehydrateToContainer) {
+            $blob = RehydrateBlobCopy -Blob $blob -RehydratePriority $RehydratePriority -RehydrateToContainer $RehydrateToContainer
+        } else {
+            $blob = RehydrateBlob -Blob $blob -RehydratePriority $RehydratePriority
+        }
+
+        if (-not $blob) {
+            LogOutput -BlobName $($blobName) -Message "Failed to rehydrate $($blobName)"
+            return
+        }
+    }
+
+    $sasToken = New-AzStorageBlobSASToken -CloudBlob $Blob.ICloudBlob -Context $Blob.Context -Permission r -ExpiryTime $((Get-Date).AddDays(7))
+    RestoreBlobFromURI -BlobUri $($Blob.ICloudBlob.Uri.Absoluteuri + $sasToken)
+
+    LogOutput -BlobName $blobName -Message "===== Restore complete ($($elapsed.Elapsed.ToString())) ====="
 }
 
 #####################################################################
@@ -316,8 +433,16 @@ if (-not $storageAccount) {
 
 $container = Get-AzStorageContainer -Name $ContainerName -Context $storageAccount.context
 if (-not $container) {
-    throw "Error getting container info for $ContainerName - "
+    throw "Error getting container info for $ContainerName"
 }
+
+if ($RehydrateToContainer) {
+    $rehydrateContainer = Get-AzStorageContainer -Name $RehydrateToContainer -Context $storageAccount.context
+    if (-not $rehydrateContainer) {
+        throw "Error getting container info for $RehydrateToContainer"
+    }
+}
+
 
 Write-Progress -Activity "Checking environment..." -Completed
 #endregion
@@ -340,8 +465,9 @@ if ($BlobName) {
             Write-Output "No blobs selected."
             return
         }
+
     } else {
-        RestoreBlob -Blob $blobs -RehydratePriority $RehydratePriority
+        RestoreBlob -Blob $blobs -RehydrateToContainer $RehydrateToContainer -RehydratePriority $RehydratePriority
         return
     }
 

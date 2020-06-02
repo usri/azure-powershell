@@ -44,6 +44,9 @@ Specifies the use of Managed Identity to authenticate into Azure Powershell APIs
 .PARAMETER Environment
 Specifies the Azure cloud environment to use for authentication. If not specified the AzureCloud is used by default
 
+.PARAMETER Force
+Execute restore without confirmation
+
 .EXAMPLE
 RestoreArchive.ps1 -StorageAccountName 'myStorageAccount' -ContainerName 'archive-continer' -BlobName 'archive.7z' -DestinationPath c:\restored-archives
 #>
@@ -87,7 +90,9 @@ param (
     [switch] $UseManagedIdentity,
 
     [Parameter(ParameterSetName = "StorageAccount")]
-    [string] $Environment
+    [string] $Environment,
+
+    [switch] $Force
 
 )
 
@@ -452,7 +457,7 @@ Write-Progress -Activity "Checking environment..." -Completed
 
 $scriptPath = $MyInvocation.InvocationName
 
-# restore a blobs by name
+# region select Blobs to restore
 if ($BlobName) {
     $blobs = Get-AzStorageBlob -Context $storageAccount.Context -Container $ContainerName | Where-Object {$_.Name -like $BlobName}
     if (-not $blobs) {
@@ -460,7 +465,8 @@ if ($BlobName) {
         return
 
     } elseif ($blobs.GetType().IsArray) {
-        $blobs = $blobs | Select-Object -Property Name, Length, AccessTier | Out-Gridview -Title "Select archive to restore" -PassThru
+        $blobs = $blobs | ForEach-Object { [PSCustomObject] @{Name = $_.Name; Size = $_.Length; AccessTier = $_.ICloudBlob.Properties.StandardBlobTier }} |
+            Out-Gridview -Title "Select archive to restore" -PassThru
         if (-not $blobs) {
             Write-Output "No blobs selected."
             return
@@ -494,10 +500,13 @@ if ($BlobName) {
 
 }
 
-#region - create jobs for each restore
-Write-Output "Blobs to restore:"
-$archiveBlobNames
+# confirm blobs
+if (-not ($Force -or $PSCmdlet.ShouldContinue($($archiveBlobNames -join "`n"), "Restore the following files?"))) {
+    return # user replied no
+}
+# endregion
 
+#region - create jobs for each restore
 $jobs = @()
 foreach ($archiveBlobName in $archiveBlobNames) {
     $blob = Get-AzStorageBlob -Context $storageAccount.Context -Container $ContainerName -Blob $archiveBlobName

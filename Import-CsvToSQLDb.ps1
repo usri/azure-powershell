@@ -73,7 +73,7 @@ Param (
     [Parameter(Mandatory=$false)]
     [int] $StartOnDataRow,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter()]
     [string] $ConfigFilePath,
 
     [Parameter(Mandatory=$false)]

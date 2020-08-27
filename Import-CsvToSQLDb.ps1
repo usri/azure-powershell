@@ -21,13 +21,13 @@ The database where table is located.
 The table to where CSV data will be inserted.
 
 .PARAMETER Credentials
-The credentials to use when connecting to the SQL Server database. If not supplied, the script will prompt for credentials. 
+The credentials to use when connecting to the SQL Server database. If not supplied, the script will prompt for credentials.
 
 .PARAMETER Delimiter
 The delimiter to use when parsing thefile specified in the -FilePath parameter. If a delimiter is not specified a comma will be used.
 
 .PARAMETER Skip
-The number of rows at the top to the file to skip. This should NOT include the header row that describes the columns. If not specified, no rows will be skipped. 
+The number of rows at the top to the file to skip. This should NOT include the header row that describes the columns. If not specified, no rows will be skipped.
 
 .PARAMETER BatchSize
 The number of rows to batch together when writing the results to the database.
@@ -43,9 +43,9 @@ Import-CsvToSQLDB.ps1 -FilePath SampleCsv.csv -ConfigFilePath .\Sample\SampleLoa
 
 #####################################################################
 # DO NOT specify default vaule here in the parameter list.
-# the settings should be obtained from the ConfigFile first then 
-# overwritten by anything specified in the parameter. If defaults 
-# are provided here the values there is no way to check if the 
+# the settings should be obtained from the ConfigFile first then
+# overwritten by anything specified in the parameter. If defaults
+# are provided here the values there is no way to check if the
 # parameters were  orginally provided or not.
 #
 Param (
@@ -299,7 +299,7 @@ for ($i=0; $i -lt $mapJsonItems.count; $i++) {
 
     if ($map.ColumnWrapJson -and $map.ColumnWrapJson -contains $mapJsonItems[$i]) {
         # wrap brackets around JSON string
-        $expandJsonExpression += "if (`$fileRow.`'$($mapJsonItems[$i])`') { `$fileRow.'" + $mapJsonItems[$i] + "' = '{' + `$fileRow.'" + $mapJsonItems[$i] + "' + '}' | ConvertFrom-Json }"   
+        $expandJsonExpression += "if (`$fileRow.`'$($mapJsonItems[$i])`') { `$fileRow.'" + $mapJsonItems[$i] + "' = '{' + `$fileRow.'" + $mapJsonItems[$i] + "' + '}' | ConvertFrom-Json }"
     } else {
         $expandJsonExpression += "if (`$fileRow.`'$($mapJsonItems[$i])`') { `$fileRow.'" + $mapJsonItems[$i] + "' = `$fileRow.'" + $mapJsonItems[$i] + "' | ConvertFrom-Json }"
     }
@@ -337,7 +337,7 @@ try {
     }
     $reader.Close()
 } catch {
-    throw $_    
+    throw $_
 }
 
 Write-Verbose "$lineCount lines in $($fileInfo.FullName)"

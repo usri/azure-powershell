@@ -338,7 +338,7 @@ $familySummary | Format-Table
 
 # disk reservations
 $reservationDisks = $disks.Values
-| Where-Object { $eligibleDisks -contains $_.Size }
+| Where-Object { $eligibleDisks -contains $_.Size -and $_.Cost -gt 0}
 | ForEach-Object { [PSCustomObject] @{
         ResourceGroup = $_.ResourceGroup
         Name          = $_.Name
@@ -356,7 +356,7 @@ if ($ShowDetails) {
 
 # ineligile disks
 $ineligibleDisks = $disks.Values
-| Where-Object { $eligibleDisks -notcontains $_.Size }
+| Where-Object { $eligibleDisks -notcontains $_.Size -or $_.Cost -eq 0}
 | ForEach-Object { [PSCustomObject] @{
         ResourceGroup = $_.ResourceGroup
         Name          = $_.Name
@@ -413,7 +413,7 @@ if ($ExcelPath) {
     # export Vm data
     $ptDef = New-PivotTableDefinition -Activate -PivotTableName 'Vm-Family-Summary' `
         -PivotRows 'Location','Family','Size' -PivotData @{Name='Count'; FamilyRatio='Sum'; CPU='Sum'; Cost='Sum'} -PivotDataToColumn
-    $reservationVms | Sort-Object -Property Family,Size,Name | Export-Excel $ExcelPath -WorkSheet 'Vm-Reservations' -AutoSize -AutoFilter -PivotTableDefinition $ptDef -Numberformat 'Currency'
+    $reservationVms | Sort-Object -Property Family,Size,Name | Export-Excel $ExcelPath -WorkSheet 'Vm-Reservations' -AutoSize -AutoFilter -PivotTableDefinition $ptDef
     $ineligibleVms | Export-Excel $ExcelPath -WorksheetName 'Vm-Ineligible' -AutoSize -AutoFilter
 
     # export disks data

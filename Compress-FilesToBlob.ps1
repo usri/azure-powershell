@@ -66,6 +66,7 @@ CompressFilesToBlob.ps1 -SourceFilePath C:\TEMP\archivefiles -StorageAccountName
 CompressFilesToBlob.ps1 -SourceFilePath C:\TEMP\archivefiles -ContainerURI 'https://test.blob.core.windows.net/archive/?st=2020-03-16T14%3A56%3A11Z&se=2020-03-17T14%3A56%3A11Z&sp=racwdl&sv=2018-03-28&sr=c&sig=uz9iBor1vhsUgrqjcU53fkGB6MQ8I%2BeI6got784E75I%3D'
 
 #>
+##Requires -Modules 'Az'
 
 [CmdletBinding()]
 param (
@@ -140,7 +141,7 @@ function IntegrityCheckFull {
         [string] $sourcePath
     )
 
-    Write-Host "Performing full integrity check of $filePath against $sourcePath..."
+    Write-Information "Performing full integrity check of $filePath against $sourcePath..."
 
     # start a timer
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -215,7 +216,7 @@ function IntegrityCheckFull {
         return $false
     }
 
-    Write-Host "$filePath full integrity check completed successfully. $itemsChecked items checked. ($($stopwatch.Elapsed))"
+    Write-Information "$filePath full integrity check completed successfully. $itemsChecked items checked. ($($stopwatch.Elapsed))"
     return $true
 }
 
@@ -228,7 +229,7 @@ function IntegrityCheckSimple {
         [string] $filePath
     )
 
-    Write-Host "Performing simple integrity check of $filePath..."
+    Write-Information "Performing simple integrity check of $filePath..."
 
     # start a timer
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -252,7 +253,7 @@ function IntegrityCheckSimple {
         return $false
     }
 
-    Write-Host "$filePath simple integrity check completed successfully. ($($stopwatch.elapsed))"
+    Write-Information "$filePath simple integrity check completed successfully. ($($stopwatch.elapsed))"
     return $true
 }
 
@@ -272,12 +273,12 @@ function CompressPathToBlob {
     if (Test-Path -Path $archivePath) {
         $answer = Read-Host "$archivePath already exists. (Replace/Update/Skip/Cancel)?"
         if ($answer -like 'C*') {
-            Write-Host "User cancelled."
+            Write-Information "User cancelled."
             exit
 
         }
         elseif ($answer -like 'S*') {
-            Write-Host "Write-Output $sourcePath skipped"
+            Write-Information "Write-Output $sourcePath skipped"
             return
         }
         elseif ($answer -like 'R*') {
@@ -318,7 +319,7 @@ function CompressPathToBlob {
     Get-Job | Stop-Job
     Get-Job | Remove-Job
 
-    Write-Host "$archivePath created. ($($stopwatch.Elapsed))"
+    Write-Information "$archivePath created. ($($stopwatch.Elapsed))"
 
     # check compressed file
     $result = $true
@@ -369,7 +370,7 @@ function CopyFileToContainer {
         $destinationUri = 'https://' + $uri.Host + "$($uri.LocalPath)/$($path.Name)" + $uri.Query
     }
 
-    Write-Host "Copy $filePath to $destinationURI started."
+    Write-Information "Copy $filePath to $destinationURI started."
 
     # using & command syntax since Invoke-Expression doesn't throw an error
     $params = @('copy', "$filePath" , $destinationURI, "--check-length")
@@ -384,7 +385,7 @@ function CopyFileToContainer {
         $script:fileContinue = $false
         return
     }
-    Write-Host "$($uri.Host)$($uri.LocalPath)/$($path.Name) copy complete. ($($stopwatch.Elapsed))"
+    Write-Information "$($uri.Host)$($uri.LocalPath)/$($path.Name) copy complete. ($($stopwatch.Elapsed))"
 }
 
 #####################################################################
@@ -462,8 +463,10 @@ Function UploadPartialZip {
         [string] $ContainerUri,
 
         [Parameter()]
-        [int] $PartialZipUploadInterval = 60
+        [int] $PartialZipUploadInterval = 60,
 
+        [Parameter()]
+        [string] $outputLog = "$env:TEMP\PartialZipUpload-$(Get-Date -Format 'yyyyMMdd').log"
     )
 
     $path = ([System.IO.FileInfo] $FilePath).DirectoryName
@@ -489,15 +492,15 @@ Function UploadPartialZip {
             }
 
             $destinationURI = 'https://' + $uri.Host + "$($uri.LocalPath)/$($file.Name)" + $uri.Query
-            Write-Host "copying...$sourcePath to $destinationUri"
+            "copying...$sourcePath to $destinationUri" | Out-File -FilePath $OutputLog -Append
             $params = @('copy', $sourcePath , $destinationUri)
             if ($script:BlobTier) {
                 $params += ("--block-blob-tier=$script:BlobTier")
             }
 
-            & $script:azCopyExe $params
+            & $script:azCopyExe $params >> $OutputLog
             if (-not $?) {
-                Write-Error "ERROR copying $($file.FullName) to $destinationUri"
+                "ERROR copying $($file.FullName) to $destinationUri"  | Out-File -FilePath $OutputLog -Append
                 continue
             }
 
@@ -507,10 +510,10 @@ Function UploadPartialZip {
             }
 
             $filesUploaded += $file.Name
-            Write-Host -Status "$($Uploaded.Count) copied"
+            "$($Uploaded.Count) copied" | Out-File -FilePath $transferLog -Append
         }
 
-        Write-Host "$($filesUploaded.Count) copied. Waiting for new files...($PartialZipUploadInterval secs)"
+        "$($filesUploaded.Count) copied. Waiting for new files...($PartialZipUploadInterval secs)" | Out-File -FilePath $OutputLog -Append
         Start-Sleep -Seconds $PartialZipUploadInterval
     }
 }
@@ -561,7 +564,7 @@ catch {
 #############
 # upload job
 if ($PartialZipPath) {
-    Write-Host "Monitoring zip files at: $PartialZipPath"
+    Write-Information "Monitoring zip files at: $PartialZipPath"
     UploadPartialZip -FilePath $PartialZipPath -ContainerUri $ContainerURI -PartialZipUploadInterval $PartialZipUploadInterval
     return
 }
@@ -705,10 +708,10 @@ foreach ($sourcePath in $sourcePaths) {
     if ($existingFiles) {
         $lockedFiles = Test-IsFileLocked -Path $existingFiles.FullName | Where-Object {$_.IsLocked}
         if ($lockedFiles) {
-            Write-Host "$sourcePath skipped. Existing $($lockedFiles.FullName) is locked."
+            Write-Information "$sourcePath skipped. Existing $($lockedFiles.FullName) is locked."
             continue
         } else {
-            Write-Host "Cleaning up leftover files $($existingFiles.FullName)"
+            Write-Information "Cleaning up leftover files $($existingFiles.FullName)"
             $existingFiles | Remove-Item
        }
     }
@@ -724,20 +727,17 @@ foreach ($sourcePath in $sourcePaths) {
         $archivePath = $path.DirectoryName + '\' + $path.BaseName + '_' + $dateStr + $path.Extension
     }
 
-    Write-Host ''
-    Write-Host "==================== $(Split-Path $archivePath -Leaf) started. $(Get-Date) ===================="
-    Write-Host ''
+    Write-Information ''
+    Write-Information "==================== $(Split-Path $archivePath -Leaf) started. $(Get-Date) ===================="
+    Write-Information ''
 
     if ($PartialZipUploadInterval) {
-        Write-Host "Starting upload monitoring job..."
-        $scriptBlock = [ScriptBlock]::Create('Param ($p1, $p2, $p3, $p4) ' + $scriptPath + ' -PartialZipPath $p1 -ContainerUri $p2 -AzCopyCommandDir $p3 -PartialZipUploadInterval $p4')
-        $params = @{
-            Name         = $sourcePath
-            ScriptBlock  = $scriptBlock
-            ArgumentList = $archivePath, $ContainerURI, $AzCopyCommandDir, $PartialZipUploadInterval
-        }
-        $uploadJob = Start-Job @params
-        $uploadJob
+        Write-Information "Starting upload monitoring job..."
+        Write-Information "Check upload logs at: $env:TEMP\PartialZipUpload-$(Get-Date -Format 'yyyyMMdd').log"
+
+        $command = "$scriptPath -PartialZIpPath '$archivePath'" + `
+            " -ContainerUri '$containerUri' -AzCopyCommandDir '$AzCopyCommandDir' -PartialZipUploadInterval '$PartialZipUploadInterval'"
+        Invoke-Expression $command &
     }
 
     CompressPathToBlob -SourcePath $sourcePath -archivePath $archivePath
@@ -772,28 +772,28 @@ foreach ($sourcePath in $sourcePaths) {
         CleanUpSource -sourcePath $sourcePath -cleanUpDir $CleanUpDir
     }
 
-    Write-Host ''
-    Write-Host "==================== $(Split-Path $archivePath -Leaf) complete. $(Get-Date) ===================="
-    Write-Host ''
+    Write-Information ''
+    Write-Information "==================== $(Split-Path $archivePath -Leaf) complete. $(Get-Date) ===================="
+    Write-Information ''
 
     $archiveSuccesses += $sourcePath
 }
 
 if ($archiveSuccesses) {
-    Write-Host ''
-    Write-Host '===== SUCCESSFULLY PROCESSED ====='
-    Write-Host $archiveSuccesses
+    Write-Information ''
+    Write-Information '===== SUCCESSFULLY PROCESSED ====='
+    Write-Information $archiveSuccesses
 }
 
 if ($archiveFailures) {
-    Write-Host ""
-    Write-Host "===== FAILED ====="
-    Write-Host $archiveFailures
+    Write-Information ""
+    Write-Information "===== FAILED ====="
+    Write-Information $archiveFailures
 }
 
-Write-Host ""
-Write-Host "===== FINAL STATS ====="
-Write-Host "$($archiveSuccesses.Count) succeeded"
-Write-Host "$($achiveFailures.count) failed"
-Write-Host ""
-Write-Host "Script Complete. $(Get-Date) - Total Elapsed: $($stopWatchStart.Elapsed.ToString())"
+Write-Information ""
+Write-Information "===== FINAL STATS ====="
+Write-Information "$($archiveSuccesses.Count) succeeded"
+Write-Information "$($achiveFailures.count) failed"
+Write-Information ""
+Write-Information "Script Complete. $(Get-Date) - Total Elapsed: $($stopWatchStart.Elapsed.ToString())"

@@ -107,7 +107,7 @@ foreach ($zone in $zones) {
 }
 #endregion
 
-#regaion -- check all endpoints and ensure the DNS recordset exist or are created
+#region -- check all endpoints and ensure the DNS recordset exist or are created
 $updateCount = 0
 
 foreach ($endpoint in $endpoints) {
@@ -152,6 +152,6 @@ foreach ($endpoint in $endpoints) {
         ++$updateCount
     }
 }
+#endregion
 
 Write-Information "$updateCount DNS recordsets updated" -InformationAction Continue
-#endregion
